@@ -1,0 +1,22 @@
+import assert from 'node:assert/strict';
+import { dashboard, defaultFilters, parseFilters, generate, briefs, csv, shift, AS_OF, UNITS, SCENARIOS } from '../lib/demo.ts';
+let passed=0;function test(name,run){run();passed++;process.stdout.write('PASS '+name+'\n');}
+const f=defaultFilters(),d=dashboard(f);
+test('360 days and deterministic synthetic rows',()=>{const a=generate('growth');assert.equal(a.rows.length,1440);assert.deepEqual(a,generate('growth'));assert.equal(new Set(a.rows.map(r=>r.date)).size,360);});
+test('revenue accounting identities',()=>{for(const r of generate('growth').rows){assert.equal(r.net,r.gross-r.discount-r.refund);assert.equal(r.categories.reduce((a,b)=>a+b,0),r.net);}assert.equal(d.categories.reduce((a,r)=>a+r.net,0),d.total.net);});
+test('profit and shared advertising reconciliation',()=>{assert.equal(d.total.profit,d.total.net-d.total.cogs-d.total.variable-d.total.ad);assert.equal(d.total.profit,d.branches.reduce((a,b)=>a+b.profit,0)-d.total.shared);assert.equal(d.total.profitTarget,d.branches.reduce((a,b)=>a+b.profitTarget,0)-30*110000);});
+test('ratios use aggregated numerator and denominator',()=>{assert.equal(d.total.mer,d.total.net/d.total.ad);assert.equal(d.total.aov,d.total.net/d.total.orders);assert.equal(d.total.margin,d.total.profit/d.total.net);});
+test('all unit selections normalize to company',()=>{assert.equal(dashboard({...f,units:[...f.units].reverse()}).total.ad,d.total.ad);assert.equal(d.meta.scope,'company');});
+test('partial branch removes common ads and MER',()=>{const a=dashboard({...f,units:['seongsu']});assert.equal(a.meta.scope,'units');assert.equal(a.total.mer,null);assert.equal(a.total.shared,0);assert.equal(a.total.profit,a.branches[0].profit);});
+test('180-day period has complete prior 180 days',()=>{const a=dashboard({...f,from:shift(AS_OF,-179)});assert.equal(a.daily.length,180);assert.equal(a.meta.prevFrom,shift(AS_OF,-359));assert.ok(a.previous.net>0);});
+test('missing cost does not become zero cost',()=>{const a=dashboard({...f,scenario:'missing'});assert.equal(a.total.cogs,null);assert.equal(a.total.profit,null);assert.ok(a.total.coverage<1);assert.ok(a.total.net>0);assert.equal(a.branches.find(b=>b.id==='seongsu').profit,null);});
+test('data delay stays provisional and profit is blocked',()=>{const a=dashboard({...f,scenario:'delay'});assert.equal(a.total.salesComplete,false);assert.equal(a.total.profit,null);assert.ok(a.daily.some(x=>x.net===null));assert.equal(briefs(a,'overview').length,0);});
+test('closed Sunday is complete and has zero sales',()=>{const a=generate('growth').rows.filter(r=>r.unit==='magok'&&!r.open);assert.ok(a.length>0);assert.ok(a.every(r=>r.net===0&&r.complete));});
+test('unmapped spend retained in total and common ratio',()=>{const a=dashboard({...f,scenario:'unmapped'});assert.ok(a.meta.unmappedRatio>0);assert.ok(a.total.shared>d.total.shared);assert.equal(a.total.ad,a.campaigns.reduce((n,c)=>n+c.spend,0));});
+test('zero prior spend has no infinite ratio',()=>{const a=dashboard({...f,scenario:'zero'});assert.equal(a.previous.ad,0);assert.equal(a.previous.mer,null);assert.ok(a.total.ad>0);});
+test('margin scenario provides actual profit decline',()=>{const a=dashboard({...f,scenario:'margin'});assert.ok(a.total.net>a.previous.net);assert.ok(a.total.profit<a.previous.profit);});
+test('CSV contains matching scope and raw totals',()=>{const c=csv(d,'overview');assert.ok(c.includes(d.meta.snapshot));assert.ok(c.includes(String(d.branches[0].net)));assert.ok(c.startsWith('\uFEFF'));});
+test('filter allowlist rejects invalid dates and branches',()=>{for(const query of ['from=2020-01-01','units=invalid','scenario=hacked','from=2026-10-08&to=2026-10-07','from=2026-01-01&to=2026-10-07'])assert.throws(()=>parseFilters(new URLSearchParams(query)));});
+test('all scenarios produce independent snapshots',()=>{assert.equal(new Set(SCENARIOS.map(s=>dashboard({...f,scenario:s.id}).meta.snapshot)).size,SCENARIOS.length);});
+test('brief evidence matches total or branch metrics',()=>{for(const scope of ['overview','sales','profitability']){const a=dashboard({...f,scenario:'margin'}),items=briefs(a,scope);assert.ok(items.length<=3);for(const item of items){assert.ok(Number.isFinite(item.current));assert.ok(Number.isFinite(item.previous));assert.ok(Math.abs(item.current-item.previous)>=1000000);}}});
+process.stdout.write(passed+' meaningful data checks passed\n');
